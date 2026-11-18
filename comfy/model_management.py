@@ -2136,7 +2136,27 @@ def supports_int8_compute(device=None):
     if is_ixuca():
         return False
 
+    # torch._int_mm goes through hipBLASLt on ROCm, which older archs (e.g. RDNA2 gfx1030) don't support:
+    # try it once and fall back to emulated int8 (dequantized weights) if it fails
+    if is_amd():
+        return _int8_mm_works(device)
+
     return True
+
+_INT8_MM_WORKS = {}
+def _int8_mm_works(device=None):
+    if device is None:
+        device = get_torch_device()
+    key = str(device)
+    if key not in _INT8_MM_WORKS:
+        try:
+            a = torch.ones((32, 32), dtype=torch.int8, device=device)
+            torch._int_mm(a, a)
+            _INT8_MM_WORKS[key] = True
+        except RuntimeError as e:
+            logging.warning("int8 matmul not supported on {} ({}), using emulated int8 ops".format(device, str(e).splitlines()[0][:80]))
+            _INT8_MM_WORKS[key] = False
+    return _INT8_MM_WORKS[key]
 
 def extended_fp16_support():
     # TODO: check why some models work with fp16 on newer torch versions but not on older
