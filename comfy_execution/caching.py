@@ -117,7 +117,7 @@ class CacheKeySetInputSignature(CacheKeySet):
         signature = [class_type, await self.is_changed_cache.get(node_id)]
         if self.include_node_id_in_input() or (hasattr(class_def, "NOT_IDEMPOTENT") and class_def.NOT_IDEMPOTENT) or include_unique_id_in_input(class_type):
             signature.append(node_id)
-        inputs = node["inputs"]
+        inputs = dynprompt.get_cache_key_inputs(node_id)
         for key in sorted(inputs.keys()):
             if is_link(inputs[key]):
                 (ancestor_id, ancestor_socket) = inputs[key]
@@ -152,7 +152,7 @@ class CacheKeySetInputSignature(CacheKeySet):
     def get_linked_input_ids(self, dynprompt, node_id):
         if not dynprompt.has_node(node_id):
             return
-        inputs = dynprompt.get_node(node_id)["inputs"]
+        inputs = dynprompt.get_cache_key_inputs(node_id)
         input_keys = sorted(inputs.keys())
         for key in input_keys:
             if is_link(inputs[key]):
