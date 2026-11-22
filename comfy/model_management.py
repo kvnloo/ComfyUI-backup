@@ -34,6 +34,7 @@ import comfy.system_memory
 import comfy.utils
 import comfy.quant_ops
 import comfy_aimdo.host_buffer
+import comfy_aimdo.model_vbar
 import comfy_aimdo.vram_buffer
 from comfy.internal_logging import detail
 
@@ -1394,6 +1395,7 @@ STREAM_CAST_BUFFERS = {}
 LARGEST_CASTED_WEIGHT = (None, 0)
 STREAM_AIMDO_CAST_BUFFERS = {}
 LARGEST_AIMDO_CASTED_WEIGHT = (None, 0)
+PENDING_VBAR_CASTS = {}
 CROSS_STEP_STATE = weakref.WeakSet()
 
 DEFAULT_AIMDO_CAST_BUFFER_RESERVATION_SIZE = 16 * 1024 ** 3
@@ -1441,10 +1443,47 @@ def get_aimdo_cast_buffer(offload_stream, device):
         STREAM_AIMDO_CAST_BUFFERS[offload_stream] = cast_buffer
     return cast_buffer
 
+def cleanup_cast_module(s):
+    prefetch = getattr(s, "_prefetch", None)
+    if prefetch is None:
+        return
+    try:
+        for param_key in ("weight", "bias"):
+            lowvram_fn = getattr(s, param_key + "_lowvram_function", None)
+            if lowvram_fn is not None:
+                lowvram_fn.clear_prepared()
+        if prefetch["signature"] is not None:
+            comfy_aimdo.model_vbar.vbar_unpin(s._v)
+    finally:
+        delattr(s, "_prefetch")
+
+def uncast_vbar(offload_state):
+    cast = PENDING_VBAR_CASTS.pop(id(offload_state), None)
+    if cast is None:
+        return
+    s, (offload_stream, device, _) = cast
+    try:
+        if offload_stream is not None:
+            offload_stream.wait_stream(current_stream(device))
+    finally:
+        comfy_aimdo.model_vbar.vbar_unpin(s._v)
+
+def cleanup_vbar_casts():
+    first_error = None
+    for _, offload_state in list(PENDING_VBAR_CASTS.values()):
+        try:
+            uncast_vbar(offload_state)
+        except Exception as e:
+            if first_error is None:
+                first_error = e
+    if first_error is not None:
+        raise first_error
+
 def reset_cast_buffers():
     global LARGEST_CASTED_WEIGHT
     global LARGEST_AIMDO_CASTED_WEIGHT
 
+    cleanup_vbar_casts()
     LARGEST_CASTED_WEIGHT = (None, 0)
     LARGEST_AIMDO_CASTED_WEIGHT = (None, 0)
     for offload_stream in set(STREAM_CAST_BUFFERS) | set(STREAM_AIMDO_CAST_BUFFERS):
